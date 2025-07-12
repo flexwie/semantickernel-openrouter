@@ -1,0 +1,188 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  PACKAGE_OUTPUT_DIRECTORY: ${{ github.workspace }}/output
+  NUGET_SOURCE_URL: 'https://nuget.pkg.github.com/flexwie/index.json'
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Cache NuGet packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+    
+    - name: Restore dependencies
+      run: dotnet restore
+    
+    - name: Build
+      run: dotnet build --configuration Release --no-restore
+    
+    - name: Test
+      run: dotnet test --configuration Release --no-build --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage
+    
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        directory: ./coverage
+        fail_ci_if_error: false
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  package:
+    name: Package
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'release'
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Restore dependencies
+      run: dotnet restore
+    
+    - name: Get version
+      id: version
+      run: |
+        if [[ "${{ github.event_name }}" == "release" ]]; then
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION=${VERSION#v} # Remove 'v' prefix if present
+        else
+          # For non-release builds, use a pre-release version
+          VERSION="1.0.0-preview.${{ github.run_number }}"
+        fi
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION"
+    
+    - name: Build and Pack
+      run: |
+        dotnet pack OpenRouter/OpenRouter.csproj \
+          --configuration Release \
+          --no-restore \
+          --output ${{ env.PACKAGE_OUTPUT_DIRECTORY }} \
+          /p:Version=${{ steps.version.outputs.VERSION }} \
+          /p:PackageVersion=${{ steps.version.outputs.VERSION }} \
+          /p:AssemblyVersion=${{ steps.version.outputs.VERSION }} \
+          /p:FileVersion=${{ steps.version.outputs.VERSION }}
+    
+    - name: Upload NuGet package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-package
+        path: ${{ env.PACKAGE_OUTPUT_DIRECTORY }}/*.nupkg
+
+  publish-github:
+    name: Publish to GitHub Packages
+    needs: package
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+    
+    steps:
+    - name: Download NuGet package artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: nuget-package
+        path: ${{ env.PACKAGE_OUTPUT_DIRECTORY }}
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Add GitHub Packages source
+      run: |
+        dotnet nuget add source \
+          --username ${{ github.repository_owner }} \
+          --password ${{ secrets.GITHUB_TOKEN }} \
+          --store-password-in-clear-text \
+          --name github \
+          "${{ env.NUGET_SOURCE_URL }}"
+    
+    - name: Publish to GitHub Packages
+      run: |
+        dotnet nuget push "${{ env.PACKAGE_OUTPUT_DIRECTORY }}/*.nupkg" \
+          --source "github" \
+          --api-key ${{ secrets.GITHUB_TOKEN }} \
+          --skip-duplicate
+
+  publish-nuget:
+    name: Publish to NuGet.org
+    needs: package
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    environment: production
+    
+    steps:
+    - name: Download NuGet package artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: nuget-package
+        path: ${{ env.PACKAGE_OUTPUT_DIRECTORY }}
+    
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+    
+    - name: Publish to NuGet.org
+      run: |
+        dotnet nuget push "${{ env.PACKAGE_OUTPUT_DIRECTORY }}/*.nupkg" \
+          --source https://api.nuget.org/v3/index.json \
+          --api-key ${{ secrets.NUGET_API_KEY }} \
+          --skip-duplicate
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
