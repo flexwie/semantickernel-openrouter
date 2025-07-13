@@ -171,6 +171,10 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     
     steps:
     - name: Checkout
