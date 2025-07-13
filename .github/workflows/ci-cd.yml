@@ -87,11 +87,14 @@ jobs:
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
         echo "Building version: $VERSION"
     
-    - name: Build and Pack
+    - name: Build
+      run: dotnet build OpenRouter/OpenRouter.csproj --configuration Release --no-restore
+    
+    - name: Pack
       run: |
         dotnet pack OpenRouter/OpenRouter.csproj \
           --configuration Release \
-          --no-restore \
+          --no-build \
           --output ${{ env.PACKAGE_OUTPUT_DIRECTORY }} \
           /p:Version=${{ steps.version.outputs.VERSION }} \
           /p:PackageVersion=${{ steps.version.outputs.VERSION }} \
