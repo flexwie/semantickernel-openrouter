@@ -16,7 +16,11 @@ OpenRouter connector for Microsoft Semantic Kernel. Provides chat completion and
 ## Installation
 
 ```bash
+# From NuGet.org (when published)
 dotnet add package SemanticKernel.Connectors.OpenRouter
+
+# From GitHub Packages
+dotnet add package flexwie.SemanticKernel.Connectors.OpenRouter --source https://nuget.pkg.github.com/flexwie/index.json
 ```
 
 ## Quick Start

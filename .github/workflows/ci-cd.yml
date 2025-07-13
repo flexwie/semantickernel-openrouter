@@ -112,6 +112,9 @@ jobs:
     needs: package
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+    permissions:
+      contents: read
+      packages: write
     
     steps:
     - name: Download NuGet package artifact
