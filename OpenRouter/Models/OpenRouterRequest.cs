@@ -42,6 +42,12 @@ public sealed class OpenRouterRequest
 
     [JsonPropertyName("provider")]
     public object? Provider { get; set; }
+
+    [JsonPropertyName("tools")]
+    public OpenRouterTool[]? Tools { get; set; }
+
+    [JsonPropertyName("tool_choice")]
+    public object? ToolChoice { get; set; }
 }
 
 public sealed class OpenRouterMessage
@@ -50,8 +56,14 @@ public sealed class OpenRouterMessage
     public required string Role { get; set; }
 
     [JsonPropertyName("content")]
-    public required string Content { get; set; }
+    public string? Content { get; set; }
 
     [JsonPropertyName("name")]
     public string? Name { get; set; }
+
+    [JsonPropertyName("tool_calls")]
+    public OpenRouterToolCall[]? ToolCalls { get; set; }
+
+    [JsonPropertyName("tool_call_id")]
+    public string? ToolCallId { get; set; }
 }

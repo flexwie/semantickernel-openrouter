@@ -90,4 +90,7 @@ public sealed class OpenRouterStreamDelta
 
     [JsonPropertyName("content")]
     public string? Content { get; set; }
+
+    [JsonPropertyName("tool_calls")]
+    public OpenRouterToolCall[]? ToolCalls { get; set; }
 }

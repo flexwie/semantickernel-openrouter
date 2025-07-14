@@ -8,6 +8,7 @@ using SemanticKernel.Connectors.OpenRouter.Models;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 
 namespace SemanticKernel.Connectors.OpenRouter.Services;
 
@@ -49,8 +50,26 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
     {
         ArgumentNullException.ThrowIfNull(chatHistory);
 
+        // Check if we need to handle automatic function invocation
+        if (kernel != null && 
+            executionSettings?.FunctionChoiceBehavior != null && 
+            ShouldAutoInvokeFunctions(executionSettings.FunctionChoiceBehavior))
+        {
+            return await OpenRouterFunctionInvoker.ProcessFunctionCallsAsync(
+                this, chatHistory, executionSettings, kernel, _logger, cancellationToken);
+        }
+
+        return await GetChatMessageContentsInternalAsync(chatHistory, executionSettings, kernel, cancellationToken);
+    }
+
+    internal async Task<IReadOnlyList<ChatMessageContent>> GetChatMessageContentsInternalAsync(
+        ChatHistory chatHistory, 
+        PromptExecutionSettings? executionSettings = null, 
+        Kernel? kernel = null, 
+        CancellationToken cancellationToken = default)
+    {
         var openRouterSettings = OpenRouterExecutionSettings.FromExecutionSettings(executionSettings);
-        var request = CreateChatRequest(chatHistory, openRouterSettings);
+        var request = CreateChatRequest(chatHistory, openRouterSettings, kernel, executionSettings);
 
         using var activity = OpenRouterTelemetry.ActivitySource.StartActivity(OpenRouterTelemetry.ActivityNames.ChatCompletion);
         var stopwatch = Stopwatch.StartNew();
@@ -75,13 +94,31 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
             activity?.SetTag(OpenRouterTelemetry.TagNames.ModelId, response.Model);
             activity?.SetTag(OpenRouterTelemetry.TagNames.RequestId, response.Id);
 
-            return response.Choices.Select(choice => new ChatMessageContent(
-                role: ParseAuthorRole(choice.Message?.Role),
-                content: choice.Message?.Content,
-                modelId: response.Model,
-                innerContent: response,
-                metadata: CreateMetadata(response.Usage)
-            )).ToList();
+            var results = new List<ChatMessageContent>();
+            
+            foreach (var choice in response.Choices)
+            {
+                var content = new ChatMessageContent(
+                    role: ParseAuthorRole(choice.Message?.Role),
+                    content: choice.Message?.Content,
+                    modelId: response.Model,
+                    innerContent: response,
+                    metadata: CreateMetadata(response.Usage)
+                );
+
+                // Handle tool calls
+                if (choice.Message?.ToolCalls != null)
+                {
+                    foreach (var toolCall in choice.Message.ToolCalls)
+                    {
+                        content.Items.Add(CreateFunctionCallContent(toolCall));
+                    }
+                }
+
+                results.Add(content);
+            }
+
+            return results;
         }
         catch (Exception ex)
         {
@@ -101,7 +138,7 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
         ArgumentNullException.ThrowIfNull(chatHistory);
 
         var openRouterSettings = OpenRouterExecutionSettings.FromExecutionSettings(executionSettings);
-        var request = CreateChatRequest(chatHistory, openRouterSettings);
+        var request = CreateChatRequest(chatHistory, openRouterSettings, kernel, executionSettings);
 
         var streamEnum = GetStreamingChatCompletionCoreAsync(request, cancellationToken);
         
@@ -131,13 +168,27 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
 
             foreach (var choice in streamResponse.Choices)
             {
-                yield return new StreamingChatMessageContent(
+                var streamingContent = new StreamingChatMessageContent(
                     role: ParseAuthorRole(choice.Delta?.Role),
                     content: choice.Delta?.Content,
                     innerContent: streamResponse,
                     choiceIndex: choice.Index,
                     modelId: streamResponse.Model
                 );
+
+                // Handle streaming tool calls
+                if (choice.Delta?.ToolCalls != null)
+                {
+                    foreach (var toolCall in choice.Delta.ToolCalls)
+                    {
+                        // For streaming, we'll include the function call content in a different way
+                        // since Items collection expects StreamingKernelContent
+                        var functionCallContent = CreateFunctionCallContent(toolCall);
+                        // TODO: Handle streaming function calls properly - for now skip
+                    }
+                }
+
+                yield return streamingContent;
             }
         }
 
@@ -214,7 +265,11 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
         }
     }
 
-    private OpenRouterRequest CreateChatRequest(ChatHistory chatHistory, OpenRouterExecutionSettings settings)
+    private OpenRouterRequest CreateChatRequest(
+        ChatHistory chatHistory, 
+        OpenRouterExecutionSettings settings, 
+        Kernel? kernel = null, 
+        PromptExecutionSettings? executionSettings = null)
     {
         var modelId = settings.ModelId ?? GetModelIdFromAttributes();
         if (string.IsNullOrWhiteSpace(modelId))
@@ -222,7 +277,7 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
             throw new ArgumentException("Model ID must be specified either in settings or service attributes");
         }
 
-        return new OpenRouterRequest
+        var request = new OpenRouterRequest
         {
             Model = modelId,
             Messages = chatHistory.Select(CreateOpenRouterMessage).ToArray(),
@@ -237,16 +292,47 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
             Models = settings.Models,
             Provider = settings.Provider
         };
+
+        // Handle function calling
+        if (kernel != null && executionSettings is { FunctionChoiceBehavior: not null })
+        {
+            var functions = GetEnabledFunctions(executionSettings.FunctionChoiceBehavior, kernel.Plugins);
+            if (functions.Any())
+            {
+                request.Tools = OpenRouterFunctionHelpers.ConvertToOpenRouterTools(functions);
+                request.ToolChoice = OpenRouterFunctionHelpers.ConvertFunctionChoiceBehaviorToToolChoice(
+                    executionSettings.FunctionChoiceBehavior, functions);
+            }
+        }
+
+        return request;
     }
 
     private static OpenRouterMessage CreateOpenRouterMessage(ChatMessageContent message)
     {
-        return new OpenRouterMessage
+        var openRouterMessage = new OpenRouterMessage
         {
             Role = ConvertRole(message.Role),
-            Content = message.Content ?? string.Empty,
+            Content = message.Content,
             Name = GetMessageName(message)
         };
+
+        // Handle function calls in assistant messages
+        var functionCalls = message.Items.OfType<FunctionCallContent>().ToArray();
+        if (functionCalls.Length > 0)
+        {
+            openRouterMessage.ToolCalls = functionCalls.Select(CreateOpenRouterToolCall).ToArray();
+        }
+
+        // Handle function results in tool messages
+        var functionResult = message.Items.OfType<FunctionResultContent>().FirstOrDefault();
+        if (functionResult != null)
+        {
+            openRouterMessage.ToolCallId = functionResult.CallId;
+            openRouterMessage.Content = functionResult.Result?.ToString();
+        }
+
+        return openRouterMessage;
     }
 
     private static string ConvertRole(AuthorRole role)
@@ -294,5 +380,83 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
         }
 
         return metadata;
+    }
+
+    private static FunctionCallContent CreateFunctionCallContent(OpenRouterToolCall toolCall)
+    {
+        var (pluginName, functionName) = OpenRouterFunctionHelpers.ParseFunctionName(toolCall.Function.Name);
+        
+        // Parse arguments JSON
+        object? arguments = null;
+        if (!string.IsNullOrEmpty(toolCall.Function.Arguments))
+        {
+            try
+            {
+                arguments = JsonSerializer.Deserialize<Dictionary<string, object?>>(toolCall.Function.Arguments);
+            }
+            catch (JsonException)
+            {
+                // If parsing fails, use the raw string
+                arguments = toolCall.Function.Arguments;
+            }
+        }
+
+        return new FunctionCallContent(
+            functionName: functionName,
+            pluginName: pluginName,
+            id: toolCall.Id,
+            arguments: arguments as KernelArguments ?? new KernelArguments());
+    }
+
+    private static OpenRouterToolCall CreateOpenRouterToolCall(FunctionCallContent functionCall)
+    {
+        // Create function name by combining plugin and function names
+        var functionName = string.IsNullOrEmpty(functionCall.PluginName) 
+            ? functionCall.FunctionName 
+            : $"{functionCall.PluginName}-{functionCall.FunctionName}";
+
+        return new OpenRouterToolCall
+        {
+            Id = functionCall.Id ?? Guid.NewGuid().ToString(),
+            Type = "function",
+            Function = new OpenRouterFunctionCall
+            {
+                Name = functionName,
+                Arguments = JsonSerializer.Serialize(functionCall.Arguments)
+            }
+        };
+    }
+
+    /// <summary>
+    /// Determines if functions should be auto-invoked based on the function choice behavior.
+    /// </summary>
+    /// <param name="functionChoiceBehavior">The function choice behavior.</param>
+    /// <returns>True if functions should be auto-invoked; otherwise, false.</returns>
+    private static bool ShouldAutoInvokeFunctions(FunctionChoiceBehavior functionChoiceBehavior)
+    {
+        // Use reflection to access the AutoInvoke property
+        var autoInvokeProperty = functionChoiceBehavior.GetType().GetProperty("AutoInvoke");
+        if (autoInvokeProperty?.GetValue(functionChoiceBehavior) is bool autoInvoke)
+        {
+            return autoInvoke;
+        }
+
+        // Default to false if property is not found
+        return false;
+    }
+
+    /// <summary>
+    /// Gets the enabled functions from the function choice behavior.
+    /// </summary>
+    /// <param name="functionChoiceBehavior">The function choice behavior.</param>
+    /// <param name="plugins">The kernel plugins.</param>
+    /// <returns>The enabled functions.</returns>
+    private static IEnumerable<KernelFunction> GetEnabledFunctions(
+        FunctionChoiceBehavior functionChoiceBehavior, 
+        KernelPluginCollection plugins)
+    {
+        // For simplified implementation, return all functions from all plugins
+        // TODO: Implement proper function filtering based on behavior type
+        return plugins.SelectMany(plugin => plugin);
     }
 }
