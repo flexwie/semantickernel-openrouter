@@ -11,8 +11,8 @@ namespace SemanticKernel.Connectors.OpenRouter.Core;
 
 public sealed class OpenRouterClient
 {
-    private const string DefaultBaseUrl = "https://openrouter.ai/api/v1";
-    private const string ChatCompletionsEndpoint = "/chat/completions";
+    private const string DefaultBaseUrl = "https://openrouter.ai";
+    private const string ChatCompletionsEndpoint = "/api/v1/chat/completions";
 
     private readonly HttpClient _httpClient;
     private readonly ILogger _logger;
@@ -41,7 +41,7 @@ public sealed class OpenRouterClient
     {
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        
+
         if (!_httpClient.DefaultRequestHeaders.UserAgent.Any())
         {
             _httpClient.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("SemanticKernel.OpenRouter", "1.0.0"));
@@ -56,7 +56,7 @@ public sealed class OpenRouterClient
 
         request.Stream = false;
         var response = await SendRequestAsync<OpenRouterResponse>(ChatCompletionsEndpoint, request, cancellationToken);
-        
+
         _logger.LogDebug("Received chat completion response from OpenRouter");
 
         // Fire and forget: fetch generation details for metrics (don't block main execution)
@@ -79,7 +79,7 @@ public sealed class OpenRouterClient
     }
 
     public async IAsyncEnumerable<OpenRouterStreamResponse> GetStreamingChatCompletionAsync(
-        OpenRouterRequest request, 
+        OpenRouterRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -108,11 +108,11 @@ public sealed class OpenRouterClient
             if (line.StartsWith("data: ", StringComparison.Ordinal))
             {
                 var data = line["data: ".Length..];
-                
+
                 if (data == "[DONE]")
                 {
                     _logger.LogDebug("Streaming response completed");
-                    
+
                     // Fire and forget: fetch generation details for metrics after streaming completes
                     if (!string.IsNullOrEmpty(lastGenerationId))
                     {
@@ -128,7 +128,7 @@ public sealed class OpenRouterClient
                             }
                         }, CancellationToken.None);
                     }
-                    
+
                     yield break;
                 }
 
@@ -150,7 +150,7 @@ public sealed class OpenRouterClient
                     {
                         lastGenerationId = streamResponse.Id;
                     }
-                    
+
                     yield return streamResponse;
                 }
             }
@@ -165,7 +165,7 @@ public sealed class OpenRouterClient
         await EnsureSuccessStatusCodeAsync(httpResponse);
 
         var responseContent = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
-        
+
         try
         {
             var result = JsonSerializer.Deserialize<T>(responseContent, JsonOptions);
@@ -200,7 +200,7 @@ public sealed class OpenRouterClient
             return;
 
         var content = await response.Content.ReadAsStringAsync();
-        
+
         throw new OpenRouterException($"OpenRouter API returned {response.StatusCode}: {response.ReasonPhrase}")
         {
             StatusCode = (int)response.StatusCode,
@@ -217,7 +217,7 @@ public sealed class OpenRouterClient
 
             var generationUri = new Uri(_baseUrl, $"/generation?id={generationId}");
             using var request = new HttpRequestMessage(HttpMethod.Get, generationUri);
-            
+
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
@@ -231,15 +231,15 @@ public sealed class OpenRouterClient
             if (generationResponse?.Data != null)
             {
                 var tags = OpenRouterTelemetry.CreateTags(
-                    modelId, 
+                    modelId,
                     OpenRouterTelemetry.OperationTypes.ChatCompletion,
                     isStreaming,
                     generationId);
 
                 OpenRouterTelemetry.RecordGenerationMetrics(tags, generationResponse.Data);
-                
-                _logger.LogDebug("Recorded generation metrics for {GenerationId}: Cost={Cost}, Tokens={Tokens}, Time={Time}s", 
-                    generationId, 
+
+                _logger.LogDebug("Recorded generation metrics for {GenerationId}: Cost={Cost}, Tokens={Tokens}, Time={Time}s",
+                    generationId,
                     generationResponse.Data.TotalCost,
                     generationResponse.Data.GetTotalNativeTokens(),
                     generationResponse.Data.GenerationTime);
