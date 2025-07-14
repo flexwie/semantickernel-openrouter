@@ -82,13 +82,112 @@ var settings = new OpenRouterExecutionSettings
     MaxTokens = 1000,
     TopP = 0.9,
     Models = new[] { "anthropic/claude-3-haiku", "openai/gpt-4" }, // Fallback models
-    Provider = new { order = new[] { "Anthropic", "OpenAI" } }
+    Provider = new { order = new[] { "Anthropic", "OpenAI" } },
+    
+    // Enhanced configuration options
+    Seed = 12345,                                    // Deterministic generation
+    ResponseFormat = OpenRouterResponseFormat.JsonObject, // JSON mode
+    User = "user-123",                               // User tracking
+    MaxCompletionTokens = 800,                       // Separate completion limit
+    Store = true,                                    // Store for analysis
+    TopLogprobs = 5,                                 // Return token probabilities
+    LogProbs = true,                                 // Include probability data
+    ServiceTier = "auto",                            // Service tier optimization
+    ParallelToolCalls = true,                        // Parallel function execution
+    
+    // Token bias examples
+    LogitBias = OpenRouterLogitBias.Merge(
+        OpenRouterLogitBias.Suppress(50256),         // Suppress specific tokens
+        OpenRouterLogitBias.Favor(25, 100, 200)     // Favor other tokens
+    ),
+    
+    // Request metadata
+    Metadata = new Dictionary<string, object>
+    {
+        ["session_id"] = "session-123",
+        ["user_type"] = "premium"
+    }
 };
 
 var response = await chatService.GetChatMessageContentsAsync(
     chatHistory, 
     executionSettings: settings
 );
+```
+
+### JSON Mode and Structured Output
+
+```csharp
+// Simple JSON object mode
+var jsonSettings = new OpenRouterExecutionSettings
+{
+    ModelId = "openai/gpt-4",
+    ResponseFormat = OpenRouterResponseFormat.JsonObject
+};
+
+// Structured JSON with schema
+var schema = new JsonSchema
+{
+    Type = "object",
+    Properties = new Dictionary<string, JsonSchemaProperty>
+    {
+        ["name"] = new() { Type = "string", Description = "Person's name" },
+        ["age"] = new() { Type = "integer", Description = "Person's age" },
+        ["skills"] = new() 
+        { 
+            Type = "array", 
+            Items = new() { Type = "string" }
+        }
+    },
+    Required = ["name", "age"]
+};
+
+var structuredSettings = new OpenRouterExecutionSettings
+{
+    ModelId = "openai/gpt-4",
+    ResponseFormat = OpenRouterResponseFormat.JsonSchema("person", "A person object", schema)
+};
+```
+
+### Deterministic Generation
+
+```csharp
+// Use the same seed for reproducible outputs
+var deterministicSettings = new OpenRouterExecutionSettings
+{
+    ModelId = "openai/gpt-3.5-turbo",
+    Seed = 42,
+    Temperature = 0.7
+};
+
+// Multiple calls with same seed will produce identical results
+var response1 = await chatService.GetChatMessageContentsAsync(chatHistory, deterministicSettings);
+var response2 = await chatService.GetChatMessageContentsAsync(chatHistory, deterministicSettings);
+// response1.Content == response2.Content (with high probability)
+```
+
+### Token Control and Bias
+
+```csharp
+var tokenControlSettings = new OpenRouterExecutionSettings
+{
+    ModelId = "openai/gpt-4",
+    
+    // Suppress unwanted tokens (e.g., prevent certain words)
+    LogitBias = OpenRouterLogitBias.Merge(
+        OpenRouterLogitBias.Suppress(50256, 628),    // Suppress specific token IDs
+        OpenRouterLogitBias.Discourage(-50, 1000),   // Reduce likelihood of token 1000
+        OpenRouterLogitBias.Encourage(2000, 3000)    // Increase likelihood of tokens
+    ),
+    
+    // Token limits
+    MaxTokens = 2000,              // Total token limit  
+    MaxCompletionTokens = 1500,    // Completion-specific limit
+    
+    // Probability information
+    LogProbs = true,               // Include token probabilities
+    TopLogprobs = 10              // Return top 10 alternatives per token
+};
 ```
 
 ## Observability & Metrics

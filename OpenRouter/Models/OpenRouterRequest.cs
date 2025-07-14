@@ -48,6 +48,39 @@ public sealed class OpenRouterRequest
 
     [JsonPropertyName("tool_choice")]
     public object? ToolChoice { get; set; }
+
+    [JsonPropertyName("seed")]
+    public int? Seed { get; set; }
+
+    [JsonPropertyName("response_format")]
+    public object? ResponseFormat { get; set; }
+
+    [JsonPropertyName("logit_bias")]
+    public Dictionary<int, int>? LogitBias { get; set; }
+
+    [JsonPropertyName("user")]
+    public string? User { get; set; }
+
+    [JsonPropertyName("max_completion_tokens")]
+    public int? MaxCompletionTokens { get; set; }
+
+    [JsonPropertyName("store")]
+    public bool? Store { get; set; }
+
+    [JsonPropertyName("metadata")]
+    public Dictionary<string, object>? Metadata { get; set; }
+
+    [JsonPropertyName("top_logprobs")]
+    public int? TopLogprobs { get; set; }
+
+    [JsonPropertyName("logprobs")]
+    public bool? LogProbs { get; set; }
+
+    [JsonPropertyName("service_tier")]
+    public string? ServiceTier { get; set; }
+
+    [JsonPropertyName("parallel_tool_calls")]
+    public bool? ParallelToolCalls { get; set; }
 }
 
 public sealed class OpenRouterMessage

@@ -290,7 +290,18 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
             RepetitionPenalty = settings.RepetitionPenalty,
             StopSequences = settings.StopSequences,
             Models = settings.Models,
-            Provider = settings.Provider
+            Provider = settings.Provider,
+            Seed = settings.Seed,
+            ResponseFormat = settings.ResponseFormat,
+            LogitBias = settings.LogitBias,
+            User = settings.User,
+            MaxCompletionTokens = settings.MaxCompletionTokens,
+            Store = settings.Store,
+            Metadata = settings.Metadata,
+            TopLogprobs = settings.TopLogprobs,
+            LogProbs = settings.LogProbs,
+            ServiceTier = settings.ServiceTier,
+            ParallelToolCalls = settings.ParallelToolCalls
         };
 
         // Handle function calling
