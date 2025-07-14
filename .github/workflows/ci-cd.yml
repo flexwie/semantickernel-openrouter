@@ -81,8 +81,10 @@ jobs:
           VERSION="${{ github.event.release.tag_name }}"
           VERSION=${VERSION#v} # Remove 'v' prefix if present
         else
-          # For non-release builds, use a pre-release version
-          VERSION="1.0.0-preview.${{ github.run_number }}"
+          # Get the latest tag, default to 0.1.0 if no tags exist
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.1.0")
+          LATEST_TAG=${LATEST_TAG#v} # Remove 'v' prefix if present
+          VERSION="${LATEST_TAG}-preview.${{ github.run_number }}"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
         echo "Building version: $VERSION"
