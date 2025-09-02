@@ -89,7 +89,8 @@ public sealed class OpenRouterMessage
     public required string Role { get; set; }
 
     [JsonPropertyName("content")]
-    public string? Content { get; set; }
+    [JsonConverter(typeof(OpenRouterMessageContentConverter))]
+    public object? Content { get; set; }
 
     [JsonPropertyName("name")]
     public string? Name { get; set; }
@@ -99,4 +100,38 @@ public sealed class OpenRouterMessage
 
     [JsonPropertyName("tool_call_id")]
     public string? ToolCallId { get; set; }
+
+    /// <summary>
+    /// Gets or sets the content as a string (for simple text messages).
+    /// This is a convenience property that works with the Content field.
+    /// </summary>
+    [JsonIgnore]
+    public string? TextContent
+    {
+        get => Content as string;
+        set => Content = value;
+    }
+
+    /// <summary>
+    /// Gets or sets the content as an array of content items (for multimodal messages).
+    /// This is a convenience property that works with the Content field.
+    /// </summary>
+    [JsonIgnore]
+    public OpenRouterContentItem[]? ContentItems
+    {
+        get => Content as OpenRouterContentItem[];
+        set => Content = value;
+    }
+
+    /// <summary>
+    /// Determines if this message has multimodal content.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsMultimodal => Content is OpenRouterContentItem[];
+
+    /// <summary>
+    /// Determines if this message has simple text content.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsTextOnly => Content is string;
 }

@@ -98,9 +98,12 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
             
             foreach (var choice in response.Choices)
             {
+                // Extract text content from response (OpenRouter typically returns strings for responses)
+                var textContent = ExtractTextFromContent(choice.Message?.Content);
+                
                 var content = new ChatMessageContent(
                     role: ParseAuthorRole(choice.Message?.Role),
-                    content: choice.Message?.Content,
+                    content: textContent,
                     modelId: response.Model,
                     innerContent: response,
                     metadata: CreateMetadata(response.Usage)
@@ -168,9 +171,12 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
 
             foreach (var choice in streamResponse.Choices)
             {
+                // Extract text content from streaming response
+                var textContent = ExtractTextFromContent(choice.Delta?.Content);
+                
                 var streamingContent = new StreamingChatMessageContent(
                     role: ParseAuthorRole(choice.Delta?.Role),
-                    content: choice.Delta?.Content,
+                    content: textContent,
                     innerContent: streamResponse,
                     choiceIndex: choice.Index,
                     modelId: streamResponse.Model
@@ -324,9 +330,17 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
         var openRouterMessage = new OpenRouterMessage
         {
             Role = ConvertRole(message.Role),
-            Content = message.Content,
             Name = GetMessageName(message)
         };
+
+        // Check if this message has multimodal content
+        var hasMultimodalContent = message.Items.Any(item => 
+            item.GetType().Name.Contains("Image") || 
+            item.GetType().Name.Contains("File") ||
+            item.GetType().Name.Contains("Binary"));
+
+        var hasNonFunctionContent = message.Items.Any(item => 
+            !item.GetType().Name.Contains("Function"));
 
         // Handle function calls in assistant messages
         var functionCalls = message.Items.OfType<FunctionCallContent>().ToArray();
@@ -341,9 +355,175 @@ public sealed class OpenRouterChatCompletionService : IChatCompletionService, IT
         {
             openRouterMessage.ToolCallId = functionResult.CallId;
             openRouterMessage.Content = functionResult.Result?.ToString();
+            return openRouterMessage;
+        }
+
+        // Create content based on message type
+        if (hasMultimodalContent)
+        {
+            // Has images, files, or other multimodal content - use content array
+            var contentItems = CreateContentItems(message);
+            openRouterMessage.Content = contentItems;
+        }
+        else if (!string.IsNullOrEmpty(message.Content))
+        {
+            // Simple text message - use string format for compatibility
+            openRouterMessage.Content = message.Content;
         }
 
         return openRouterMessage;
+    }
+
+    private static OpenRouterContentItem[] CreateContentItems(ChatMessageContent message)
+    {
+        var contentItems = new List<OpenRouterContentItem>();
+
+        // Add text content if present
+        if (!string.IsNullOrEmpty(message.Content))
+        {
+            contentItems.Add(OpenRouterContentHelper.CreateText(message.Content));
+        }
+
+        // Process all content items
+        foreach (var item in message.Items)
+        {
+            var contentItem = ConvertToOpenRouterContentItem(item);
+            if (contentItem != null)
+            {
+                contentItems.Add(contentItem);
+            }
+        }
+
+        return contentItems.ToArray();
+    }
+
+    private static OpenRouterContentItem? ConvertToOpenRouterContentItem(KernelContent item)
+    {
+        // Handle different content types based on their type name and properties
+        var typeName = item.GetType().Name;
+        
+        // Try to handle image content
+        if (typeName.Contains("Image"))
+        {
+            return ConvertImageContent(item);
+        }
+        
+        // Try to handle file content
+        if (typeName.Contains("File") || typeName.Contains("Binary"))
+        {
+            return ConvertFileContent(item);
+        }
+
+        // Skip function call and result content (handled separately)
+        if (typeName.Contains("Function"))
+        {
+            return null;
+        }
+
+        // Handle any other text-based content
+        if (item is KernelContent content && !string.IsNullOrEmpty(content.ToString()))
+        {
+            return OpenRouterContentHelper.CreateText(content.ToString() ?? string.Empty);
+        }
+
+        return null;
+    }
+
+    private static OpenRouterContentItem? ConvertImageContent(KernelContent item)
+    {
+        try
+        {
+            // Use reflection to handle ImageContent regardless of specific type
+            var uriProperty = item.GetType().GetProperty("Uri");
+            var dataProperty = item.GetType().GetProperty("Data");
+            var dataUriProperty = item.GetType().GetProperty("DataUri");
+            
+            // Handle URI-based images
+            if (uriProperty?.GetValue(item) is Uri uri)
+            {
+                return OpenRouterContentHelper.CreateImageUrl(uri.ToString());
+            }
+
+            // Handle data URI images
+            if (dataUriProperty?.GetValue(item) is string dataUri && !string.IsNullOrEmpty(dataUri))
+            {
+                return OpenRouterContentHelper.CreateImageUrl(dataUri);
+            }
+
+            // Handle byte data images
+            if (dataProperty?.GetValue(item) is byte[] data && data.Length > 0)
+            {
+                // Default to PNG if we can't determine the type
+                var mimeTypeProperty = item.GetType().GetProperty("MimeType");
+                var mimeType = mimeTypeProperty?.GetValue(item) as string ?? "image/png";
+                
+                return OpenRouterContentUtilities.CreateImageFromBytes(data, mimeType);
+            }
+        }
+        catch (Exception)
+        {
+            // If reflection fails, skip this content item
+        }
+
+        return null;
+    }
+
+    private static OpenRouterContentItem? ConvertFileContent(KernelContent item)
+    {
+        try
+        {
+            // Use reflection to handle file content regardless of specific type
+            var dataProperty = item.GetType().GetProperty("Data");
+            var dataUriProperty = item.GetType().GetProperty("DataUri");
+            var uriProperty = item.GetType().GetProperty("Uri");
+            var filenameProperty = item.GetType().GetProperty("Filename") ?? 
+                                 item.GetType().GetProperty("Name");
+
+            var filename = filenameProperty?.GetValue(item) as string ?? "document";
+            
+            // Handle data URI files
+            if (dataUriProperty?.GetValue(item) is string dataUri && OpenRouterContentUtilities.IsValidDataUrl(dataUri))
+            {
+                var mimeType = OpenRouterContentUtilities.ExtractMimeTypeFromDataUrl(dataUri);
+                var base64Data = OpenRouterContentUtilities.ExtractBase64FromDataUrl(dataUri);
+                
+                if (mimeType != null && base64Data != null)
+                {
+                    return OpenRouterContentHelper.CreateFile(filename, base64Data, mimeType);
+                }
+            }
+
+            // Handle byte data files
+            if (dataProperty?.GetValue(item) is byte[] data && data.Length > 0)
+            {
+                var mimeTypeProperty = item.GetType().GetProperty("MimeType");
+                var mimeType = mimeTypeProperty?.GetValue(item) as string ?? "application/pdf";
+                
+                return OpenRouterContentUtilities.CreateFileFromBytes(data, filename, mimeType);
+            }
+
+            // Handle URI-based files (convert to data if possible)
+            if (uriProperty?.GetValue(item) is Uri uri && uri.IsFile)
+            {
+                return OpenRouterContentUtilities.CreateFileFromPath(uri.LocalPath);
+            }
+        }
+        catch (Exception)
+        {
+            // If reflection fails, skip this content item
+        }
+
+        return null;
+    }
+
+    private static string? ExtractTextFromContent(object? content)
+    {
+        return content switch
+        {
+            string text => text,
+            OpenRouterContentItem[] items => string.Join("", items.OfType<OpenRouterTextContent>().Select(t => t.Text)),
+            _ => content?.ToString()
+        };
     }
 
     private static string ConvertRole(AuthorRole role)

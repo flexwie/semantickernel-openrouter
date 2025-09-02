@@ -3,73 +3,72 @@ name: Dependency Update
 on:
   schedule:
     # Run every Monday at 9 AM UTC
-    - cron: '0 9 * * 1'
+    - cron: "0 9 * * 1"
   workflow_dispatch: # Allow manual triggering
 
 jobs:
   update-dependencies:
     name: Update Dependencies
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
-    
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '8.0.x'
-    
-    - name: Install dotnet-outdated tool
-      run: dotnet tool install --global dotnet-outdated-tool
-    
-    - name: Check for outdated packages
-      id: outdated
-      run: |
-        OUTDATED_OUTPUT=$(dotnet outdated --output json)
-        echo "OUTDATED_COUNT=$(echo $OUTDATED_OUTPUT | jq '[.Projects[].TargetFrameworks[].Dependencies[] | select(.IsOutdated == true)] | length')" >> $GITHUB_OUTPUT
-        echo "OUTDATED_PACKAGES=$OUTDATED_OUTPUT" >> $GITHUB_OUTPUT
-    
-    - name: Update packages
-      if: steps.outdated.outputs.OUTDATED_COUNT > 0
-      run: |
-        # Update to latest stable versions
-        dotnet outdated --upgrade --exclude-prereleases
-    
-    - name: Build and test after updates
-      if: steps.outdated.outputs.OUTDATED_COUNT > 0
-      run: |
-        dotnet restore
-        dotnet build --configuration Release
-        dotnet test --configuration Release --no-build
-    
-    - name: Create Pull Request
-      if: steps.outdated.outputs.OUTDATED_COUNT > 0
-      uses: peter-evans/create-pull-request@v6
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        commit-message: 'chore: update dependencies'
-        title: 'chore: update dependencies'
-        body: |
-          ## Dependency Update
-          
-          This PR updates outdated NuGet packages to their latest stable versions.
-          
-          ### Changes
-          - Updated ${{ steps.outdated.outputs.OUTDATED_COUNT }} packages
-          
-          ### Verification
-          - ✅ Build successful
-          - ✅ All tests passing
-          
-          This PR was automatically created by the dependency update workflow.
-        branch: chore/update-dependencies
-        delete-branch: true
-        labels: |
-          dependencies
-          automated
-        reviewers: |
-          ${{ github.repository_owner }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install dotnet-outdated tool
+        run: dotnet tool install --global dotnet-outdated-tool
+
+      - name: Check for outdated packages
+        id: outdated
+        run: |
+          dotnet outdated --output deps-outdated.json
+          echo "OUTDATED_COUNT=$(cat deps-outdated.json | jq '[.Projects[].TargetFrameworks[].Dependencies[] | select(.IsOutdated == true)] | length')" >> $GITHUB_OUTPUT
+
+      - name: Update packages
+        if: steps.outdated.outputs.OUTDATED_COUNT > 0
+        run: |
+          # Update to latest stable versions
+          dotnet outdated --upgrade --exclude-prereleases
+
+      - name: Build and test after updates
+        if: steps.outdated.outputs.OUTDATED_COUNT > 0
+        run: |
+          dotnet restore
+          dotnet build --configuration Release
+          dotnet test --configuration Release --no-build
+
+      - name: Create Pull Request
+        if: steps.outdated.outputs.OUTDATED_COUNT > 0
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update dependencies"
+          title: "chore: update dependencies"
+          body: |
+            ## Dependency Update
+
+            This PR updates outdated NuGet packages to their latest stable versions.
+
+            ### Changes
+            - Updated ${{ steps.outdated.outputs.OUTDATED_COUNT }} packages
+
+            ### Verification
+            - ✅ Build successful
+            - ✅ All tests passing
+
+            This PR was automatically created by the dependency update workflow.
+          branch: chore/update-dependencies
+          delete-branch: true
+          labels: |
+            dependencies
+            automated
+          reviewers: |
+            ${{ github.repository_owner }}
